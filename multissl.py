@@ -1,4 +1,4 @@
-#./python
+#!./python
 """Run Python tests against multiple installations of OpenSSL and LibreSSL
 
 The script
@@ -20,17 +20,24 @@ Linux with GCC 4.x.
 
 (c) 2013-2016 Christian Heimes <christian@python.org>
 """
+from __future__ import print_function
+
+import logging
 import os
-from urllib.request import urlopen
-import tarfile
+try:
+    from urllib.request import urlopen
+except ImportError:
+    from urllib2 import urlopen
 import subprocess
 import shutil
-import logging
+import sys
+import tarfile
+
 
 log = logging.getLogger("multissl")
 
-#OPENSSL_VERSIONS = ["0.9.7e", "0.9.7m", "0.9.8i", "0.9.8l", "0.9.8k", "0.9.8m", "0.9.8y", "1.0.0k", "1.0.1e", "1.0.2", "1.0.1l"]
-OPENSSL_VERSIONS = ["0.9.8zh", "1.0.1s", "1.0.2g", "1.1.0-pre5"]
+# OPENSSL_VERSIONS = ["0.9.7e", "0.9.7m", "0.9.8i", "0.9.8l", "0.9.8k", "0.9.8m", "0.9.8y", "1.0.0k", "1.0.1e", "1.0.2", "1.0.1l"]
+OPENSSL_VERSIONS = ["0.9.8zh", "1.0.1s", "1.0.2g", "1.1.0-pre6"]
 OPENSSL_URL = "http://www.openssl.org/source/openssl-{}.tar.gz"
 LIBRESSL_VERSIONS = ["2.3.3"]
 LIBRESSL_URL = "http://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-{}.tar.gz"
@@ -46,10 +53,11 @@ class BuildOpenSSL:
     build_template = "openssl-{}"
     default_destdir = OPENSSL_DEST_DIR
 
-    module_files = ["Modules/_ssl.c",
+    module_files = ("Modules/_ssl.c",
                     "Modules/socketmodule.c",
-                    "Modules/_hashopenssl.c"]
-    
+                    "Modules/_hashopenssl.c")
+    module_libs = ("_ssl", "_hashlib")
+
     def __init__(self, version, openssl_compile_args=(), destdir=None):
         self._check_python_builddir()
         self.version = version
@@ -60,11 +68,14 @@ class BuildOpenSSL:
         self.install_dir = os.path.join(destdir, version)
         # source file
 
-        self.src_file = os.path.join(destdir, "src", 
-            self.src_template.format(version))
+        self.src_file = os.path.join(
+            destdir, "src", self.src_template.format(version))
         # build directory (removed after install)
-        self.build_dir = os.path.join(destdir, "src", 
-            self.build_template.format(version))
+        self.build_dir = os.path.join(
+            destdir, "src", self.build_template.format(version))
+
+    def __str__(self):
+        return "<{0.__class__.__name__} for {0.version}>".format(self)
 
     @property
     def openssl_cli(self):
@@ -73,9 +84,9 @@ class BuildOpenSSL:
 
     @property
     def openssl_version(self):
-       """output of 'bin/openssl version'"""
-       cmd= [self.openssl_cli, "version"]
-       return self._subprocess_output(cmd)
+        """output of 'bin/openssl version'"""
+        cmd = [self.openssl_cli, "version"]
+        return self._subprocess_output(cmd)
 
     @property
     def pyssl_version(self):
@@ -99,19 +110,15 @@ class BuildOpenSSL:
     def has_src(self):
         return os.path.isfile(self.src_file)
 
-    def _subprocess_call(self, cmd, stdout=subprocess.DEVNULL, env=None, **kwargs):
+    def _subprocess_call(self, cmd, env=None, **kwargs):
         log.debug("Call '{}'".format(" ".join(cmd)))
-        #if env is None:
-        #    env = os.environ.copy()
-        #    env["LD_RUN_PATH"]= self.lib_dir
-        #    env["LD_LIBRARY_PATH"]= self.lib_dir
-        return subprocess.check_call(cmd, stdout=stdout, env=env, **kwargs)
+        return subprocess.check_call(cmd, env=env, **kwargs)
 
     def _subprocess_output(self, cmd, env=None, **kwargs):
         log.debug("Call '{}'".format(" ".join(cmd)))
         if env is None:
             env = os.environ.copy()
-            env["LD_LIBRARY_PATH"]= self.lib_dir
+            env["LD_LIBRARY_PATH"] = self.lib_dir
         out = subprocess.check_output(cmd, env=env)
         return out.strip().decode("utf-8")
 
@@ -141,11 +148,14 @@ class BuildOpenSSL:
         os.makedirs(self.build_dir)
 
         tf = tarfile.open(self.src_file)
-        base = self.build_template.format(self.version) + '/'
+        name = self.build_template.format(self.version)
+        base = name + '/'
         # force extraction into build dir
         members = tf.getmembers()
-        for member in members:
-            if not member.name.startswith(base):
+        for member in list(members):
+            if member.name == name:
+                members.remove(member)
+            elif not member.name.startswith(base):
                 raise ValueError(member.name, base)
             member.name = member.name[len(base):].lstrip('/')
         log.info("Unpacking files to {}".format(self.build_dir))
@@ -186,33 +196,51 @@ class BuildOpenSSL:
         log.warn("Using OpenSSL build from {}".format(self.build_dir))
         # force a rebuild of all modules that use OpenSSL APIs
         for fname in self.module_files:
-            os.utime(fname)
-        
+            os.utime(fname, None)
+        # remove all build artefacts
+        for root, dirs, files in os.walk('build'):
+            for filename in files:
+                if filename.startswith(self.module_libs):
+                    os.unlink(os.path.join(root, filename))
+
         # overwrite header and library search paths
         env = os.environ.copy()
-        env["CPPFLAGS"]= "-I{}".format(self.include_dir)
-        env["LDFLAGS"]= "-L{}".format(self.lib_dir)
+        env["CPPFLAGS"] = "-I{}".format(self.include_dir)
+        env["LDFLAGS"] = "-L{}".format(self.lib_dir)
         # set rpath
-        env["LD_RUN_PATH"]= self.lib_dir
+        env["LD_RUN_PATH"] = self.lib_dir
 
         log.info("Rebuilding Python modules")
         cmd = ["./python", "setup.py", "build"]
         self._subprocess_call(cmd, env=env)
 
+    def check_imports(self):
+        cmd = ["./python", "-c", "import _ssl; import _hashlib"]
+        self._subprocess_call(cmd)
+
     def check_pyssl(self):
         version = self.pyssl_version
-        #if self.version not in version:
-        #    raise ValueError(version)
+        if self.version not in version:
+            raise ValueError(version)
 
     def run_pytests(self, *args):
-        cmd = ["./python", "-m", "test"]
+        if sys.version_info < (3, 0):
+            cmd = ["./python", "-m", "test.regrtest"]
+        else:
+            cmd = ["./python", "-m", "test"]
         cmd.extend(args)
         self._subprocess_call(cmd, stdout=None)
 
     def run_python_tests(self, *args):
         self.recompile_pymods()
+        self.check_imports()
         self.check_pyssl()
-        self.run_pytests(*args)
+        try:
+            self.run_pytests(*args)
+        except Exception:
+            print(self)
+            raise
+
 
 class BuildLibreSSL(BuildOpenSSL):
     url_template = LIBRESSL_URL
@@ -242,5 +270,9 @@ if __name__ == "__main__":
         builds.append(build)
 
     for build in builds:
+        # if build.version.startswith('1.1'):
+        # build.recompile_pymods()
         build.run_python_tests("-unetwork", "-v", "test_ssl", "test_hashlib")
 
+    for build in builds:
+        print(str(build))
