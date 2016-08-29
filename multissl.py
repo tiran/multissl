@@ -4,11 +4,11 @@
 The script
 
   (1) downloads OpenSSL tar bundle
-  (2) extracts it to ../openssl/src/openssl-VERSION/
+  (2) extracts it to ./src
   (3) compiles OpenSSL
-  (4) installs OpenSSL into ../openssl/VERSION/
+  (4) installs OpenSSL into ./LIB/VERSION/
   (5) forces a recompilation of Python modules using the
-      header and library files from ../openssl/VERSION/
+      header and library files from ./LIB/VERSION/
   (6) runs Python's test suite
 
 The script must be run with Python's build directory as current working
@@ -36,32 +36,34 @@ import tarfile
 
 log = logging.getLogger("multissl")
 
-# OPENSSL_VERSIONS = ["0.9.7e", "0.9.7m", "0.9.8i", "0.9.8l", "0.9.8k", "0.9.8m", "0.9.8y", "1.0.0k", "1.0.1e", "1.0.2", "1.0.1l"]
-OPENSSL_VERSIONS = ["0.9.8zh", "1.0.1s", "1.0.2g", "1.1.0-pre6"]
+OPENSSL_VERSIONS = ["0.9.8zc", "0.9.8zh", "1.0.1t", "1.0.2", "1.0.2h", "1.1.0"]
 OPENSSL_URL = "http://www.openssl.org/source/openssl-{}.tar.gz"
-LIBRESSL_VERSIONS = ["2.3.3"]
+
+LIBRESSL_VERSIONS = ["2.3.0", "2.4.2"]
 LIBRESSL_URL = "http://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-{}.tar.gz"
 
-HERE = os.path.abspath(os.getcwd())
-OPENSSL_DEST_DIR = os.path.abspath(os.path.join(HERE, os.pardir, "openssl"))
-LIBRESSL_DEST_DIR = os.path.abspath(os.path.join(HERE, os.pardir, "libressl"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+SRC_DEST_DIR = os.path.abspath(os.path.join(HERE, "src"))
+OPENSSL_DEST_DIR = os.path.abspath(os.path.join(HERE, "openssl"))
+LIBRESSL_DEST_DIR = os.path.abspath(os.path.join(HERE, "libressl"))
 
 
-class BuildOpenSSL:
-    url_template = OPENSSL_URL
-    src_template = "openssl-{}.tar.gz"
-    build_template = "openssl-{}"
-    default_destdir = OPENSSL_DEST_DIR
+class AbstractBuilder(object):
+    library = None
+    url_template = None
+    src_template = None
+    build_template = None
+    default_destdir = None
 
     module_files = ("Modules/_ssl.c",
                     "Modules/socketmodule.c",
                     "Modules/_hashopenssl.c")
     module_libs = ("_ssl", "_hashlib")
 
-    def __init__(self, version, openssl_compile_args=(), destdir=None):
+    def __init__(self, version, compile_args=(), destdir=None):
         self._check_python_builddir()
         self.version = version
-        self.openssl_compile_args = openssl_compile_args
+        self.compile_args = compile_args
         if destdir is None:
             destdir = self.default_destdir
         # installation directory
@@ -69,10 +71,10 @@ class BuildOpenSSL:
         # source file
 
         self.src_file = os.path.join(
-            destdir, "src", self.src_template.format(version))
+            SRC_DEST_DIR, self.src_template.format(version))
         # build directory (removed after install)
         self.build_dir = os.path.join(
-            destdir, "src", self.build_template.format(version))
+            SRC_DEST_DIR, self.build_template.format(version))
 
     def __str__(self):
         return "<{0.__class__.__name__} for {0.version}>".format(self)
@@ -126,8 +128,8 @@ class BuildOpenSSL:
         if not os.path.isfile("python") or not os.path.isfile("setup.py"):
             raise ValueError("Script must be run in Python build directory")
 
-    def _download_openssl(self):
-        """Download OpenSSL source dist"""
+    def _download_src(self):
+        """Download sources"""
         src_dir = os.path.dirname(self.src_file)
         if not os.path.isdir(src_dir):
             os.makedirs(src_dir)
@@ -140,7 +142,7 @@ class BuildOpenSSL:
         with open(self.src_file, "wb") as f:
             f.write(data)
 
-    def _unpack_openssl(self):
+    def _unpack_src(self):
         """Unpack tar.gz bundle"""
         # cleanup
         if os.path.isdir(self.build_dir):
@@ -161,16 +163,16 @@ class BuildOpenSSL:
         log.info("Unpacking files to {}".format(self.build_dir))
         tf.extractall(self.build_dir, members)
 
-    def _build_openssl(self):
+    def _build_src(self):
         """Now build openssl"""
         log.info("Running build in {}".format(self.build_dir))
         cwd = self.build_dir
         cmd = ["./config", "shared", "--prefix={}".format(self.install_dir)]
-        cmd.extend(self.openssl_compile_args)
+        cmd.extend(self.compile_args)
         self._subprocess_call(cmd, cwd=cwd)
         self._subprocess_call(["make", "-j1"], cwd=cwd)
 
-    def _install_openssl(self, remove=True):
+    def _make_install(self, remove=True):
         self._subprocess_call(["make", "-j1", "install"], cwd=self.build_dir)
         if remove:
             shutil.rmtree(self.build_dir)
@@ -179,12 +181,12 @@ class BuildOpenSSL:
         log.info(self.openssl_cli)
         if not self.has_openssl:
             if not self.has_src:
-                self._download_openssl()
+                self._download_src()
             else:
                 log.debug("Already has src {}".format(self.src_file))
-            self._unpack_openssl()
-            self._build_openssl()
-            self._install_openssl()
+            self._unpack_src()
+            self._build_src()
+            self._make_install()
         else:
             log.info("Already has installation {}".format(self.install_dir))
         # validate installation
@@ -193,7 +195,7 @@ class BuildOpenSSL:
             raise ValueError(version)
 
     def recompile_pymods(self):
-        log.warn("Using OpenSSL build from {}".format(self.build_dir))
+        log.warn("Using build from {}".format(self.build_dir))
         # force a rebuild of all modules that use OpenSSL APIs
         for fname in self.module_files:
             os.utime(fname, None)
@@ -224,7 +226,7 @@ class BuildOpenSSL:
             raise ValueError(version)
 
     def run_pytests(self, *args):
-        if sys.version_info < (3, 0):
+        if sys.version_info < (3, 3):
             cmd = ["./python", "-m", "test.regrtest"]
         else:
             cmd = ["./python", "-m", "test"]
@@ -242,7 +244,16 @@ class BuildOpenSSL:
             raise
 
 
-class BuildLibreSSL(BuildOpenSSL):
+class BuildOpenSSL(AbstractBuilder):
+    library = "OpenSSL"
+    url_template = OPENSSL_URL
+    src_template = "openssl-{}.tar.gz"
+    build_template = "openssl-{}"
+    default_destdir = OPENSSL_DEST_DIR
+
+
+class BuildLibreSSL(AbstractBuilder):
+    library = "LibreSSL"
     url_template = LIBRESSL_URL
     src_template = "libressl-{}.tar.gz"
     build_template = "libressl-{}"
@@ -257,10 +268,10 @@ if __name__ == "__main__":
 
     for version in OPENSSL_VERSIONS:
         if version in {"0.9.8i", "0.9.8l", "0.9.8k"}:
-            openssl_compile_args = ("no-asm",)
+            compile_args = ("no-asm",)
         else:
-            openssl_compile_args = ()
-        build = BuildOpenSSL(version, openssl_compile_args)
+            compile_args = ()
+        build = BuildOpenSSL(version, compile_args)
         build.install()
         builds.append(build)
 
@@ -270,8 +281,9 @@ if __name__ == "__main__":
         builds.append(build)
 
     for build in builds:
-        # if build.version.startswith('1.1'):
-        # build.recompile_pymods()
+        build.recompile_pymods()
+
+    for build in builds:
         build.run_python_tests("-unetwork", "-v", "test_ssl", "test_hashlib")
 
     for build in builds:
