@@ -22,6 +22,7 @@ Linux with GCC 4.x.
 """
 from __future__ import print_function
 
+from datetime import datetime
 import logging
 import os
 try:
@@ -40,7 +41,7 @@ OPENSSL_VERSIONS = [
      "0.9.8zc",
      "0.9.8zh",
      "1.0.1u",
-     #"1.0.2",
+     # "1.0.2",
      "1.0.2i",
      "1.1.0a",
 ]
@@ -136,9 +137,10 @@ class AbstractBuilder(object):
         for name in ['python', 'setup.py', 'Modules/_ssl.c',
                      'Lib/test/ssltests.py']:
             if not os.path.isfile(name):
-                raise ValueError("Script must be run in Python build directory")
-        #if sys.executable != os.path.abspath("python"):
-        #    raise ValueError("Script must be executed with './python'")
+                raise ValueError("You must run this script from the Python "
+                                 "build directory")
+        # if sys.executable != os.path.abspath("python"):
+        #     raise ValueError("Script must be executed with './python'")
 
     def _download_src(self):
         """Download sources"""
@@ -270,7 +272,8 @@ class BuildOpenSSL(AbstractBuilder):
 class BuildLibreSSL(AbstractBuilder):
     library = "LibreSSL"
     # HTTP! It's 2016!!
-    url_template = "http://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-{}.tar.gz"
+    url_template = (
+        "http://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-{}.tar.gz")
     src_template = "libressl-{}.tar.gz"
     build_template = "libressl-{}"
     default_destdir = os.path.join(MULTISSL_DIR, 'libressl')
@@ -280,6 +283,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="*** %(levelname)s %(message)s")
 
+    start = datetime.now()
     if not os.path.isfile('Makefile'):
         log.info('Running ./configure')
         subprocess.check_call([
@@ -290,9 +294,9 @@ if __name__ == "__main__":
     log.info('Running make')
     subprocess.check_call(['make', '--quiet', '-j4'])
 
-    #OPENSSL_VERSIONS = ["1.1.0"]
-    #LIBRESSL_VERSIONS = []
-    #OPENSSL_VERSIONS.remove("1.1.0")
+    if False:
+        OPENSSL_VERSIONS = ["1.1.0a"]
+        LIBRESSL_VERSIONS = []
 
     # download and register builder
     builds = []
@@ -314,10 +318,15 @@ if __name__ == "__main__":
     for build in builds:
         build.recompile_pymods()
 
-    for build in builds:
-        #build.run_python_tests("-unetwork,urlfetch", "-v", "test_hashlib")
-        build.run_python_tests()
+    if False:
+        for build in builds:
+            build.run_python_tests("-unetwork,urlfetch", "-w",
+                                   "test_hashlib", "test_ssl")
+    else:
+        for build in builds:
+            build.run_python_tests()
 
     for build in builds:
         print(str(build))
-
+    print('Python', sys.version_info)
+    print(datetime.now() - start)
