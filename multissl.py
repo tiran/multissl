@@ -22,6 +22,7 @@ Linux with GCC 4.x.
 """
 from __future__ import print_function
 
+import argparse
 from datetime import datetime
 import logging
 import os
@@ -62,6 +63,7 @@ class AbstractBuilder(object):
     url_template = None
     src_template = None
     build_template = None
+    default_python_srcdir = '.'
     default_destdir = None
     srcdir = os.path.join(MULTISSL_DIR, "src")
 
@@ -69,7 +71,10 @@ class AbstractBuilder(object):
                     "Modules/_hashopenssl.c")
     module_libs = ("_ssl", "_hashlib")
 
-    def __init__(self, version, compile_args=(), destdir=None):
+    def __init__(self, version, compile_args=(), py_srcdir=None, destdir=None):
+        if py_srcdir is None:
+            py_srcdir = self.default_python_srcdir
+        self.py_srcdir = py_srcdir
         self._check_python_builddir()
         self.version = version
         self.compile_args = compile_args
@@ -134,8 +139,10 @@ class AbstractBuilder(object):
         return out.strip().decode("utf-8")
 
     def _check_python_builddir(self):
-        for name in ['python', 'setup.py', 'Modules/_ssl.c',
-                     'Lib/test/ssltests.py']:
+        for name in ['python',
+                     os.path.join(self.py_srcdir, 'setup.py'),
+                     os.path.join(self.py_srcdir, 'Modules/_ssl.c'),
+                     os.path.join(self.py_srcdir, 'Lib/test/ssltests.py')]:
             if not os.path.isfile(name):
                 raise ValueError("You must run this script from the Python "
                                  "build directory")
@@ -212,7 +219,7 @@ class AbstractBuilder(object):
         log.warn("Using build from {}".format(self.build_dir))
         # force a rebuild of all modules that use OpenSSL APIs
         for fname in self.module_files:
-            os.utime(fname, None)
+            os.utime(os.path.join(self.py_srcdir, fname), None)
         # remove all build artefacts
         for root, dirs, files in os.walk('build'):
             for filename in files:
@@ -227,7 +234,7 @@ class AbstractBuilder(object):
         env["LD_RUN_PATH"] = self.lib_dir
 
         log.info("Rebuilding Python modules")
-        cmd = ['./python', "setup.py", "build"]
+        cmd = ['./python', os.path.join(self.py_srcdir, "setup.py"), "build"]
         self._subprocess_call(cmd, env=env)
         self.check_imports()
 
@@ -242,7 +249,8 @@ class AbstractBuilder(object):
 
     def run_pytests(self, *args):
         if not args:
-            cmd = ['./python', 'Lib/test/ssltests.py']
+            cmd = ['./python',
+                   os.path.join(self.py_srcdir, 'Lib/test/ssltests.py')]
         elif sys.version_info < (3, 3):
             cmd = ['./python', "-m", "test.regrtest"]
             cmd.extend(args)
@@ -283,11 +291,19 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="*** %(levelname)s %(message)s")
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--srcdir', default='.',
+                        help='CPython source directory. '
+                             'Defaults to the current directory.')
+    args = parser.parse_args()
+    srcdir = args.srcdir
+
     start = datetime.now()
     if not os.path.isfile('Makefile'):
-        log.info('Running ./configure')
+        configure_path = os.path.join(srcdir, 'configure')
+        log.info('Running %s' % configure_path)
         subprocess.check_call([
-            './configure', '--config-cache', '--quiet',
+            configure_path, '--config-cache', '--quiet',
             '--with-pydebug'
         ])
 
@@ -305,12 +321,12 @@ if __name__ == "__main__":
             compile_args = ("no-asm",)
         else:
             compile_args = ()
-        build = BuildOpenSSL(version, compile_args)
+        build = BuildOpenSSL(version, compile_args, srcdir)
         build.install()
         builds.append(build)
 
     for version in LIBRESSL_VERSIONS:
-        build = BuildLibreSSL(version)
+        build = BuildLibreSSL(version, py_srcdir=srcdir)
         build.install()
         builds.append(build)
 
