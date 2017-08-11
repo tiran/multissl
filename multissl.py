@@ -43,13 +43,16 @@ OPENSSL_VERSIONS = [
      "1.0.1u",
      "1.0.2",
      "1.0.2k",
+     "1.0.2l",
      "1.1.0e",
+     "1.1.0f",
 ]
 
 LIBRESSL_VERSIONS = [
     "2.3.10",
     "2.4.5",
     "2.5.3",
+    "2.5.5",
 ]
 
 
@@ -296,7 +299,7 @@ if __name__ == "__main__":
     subprocess.check_call(['make', '--quiet', '-j4'])
 
     if False:
-        OPENSSL_VERSIONS = ["1.1.0e"]
+        OPENSSL_VERSIONS = ["1.1.1-dev"]
         LIBRESSL_VERSIONS = []
 
     # download and register builder
