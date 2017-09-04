@@ -16,12 +16,13 @@ directory.
 
 The script uses LD_RUN_PATH, LD_LIBRARY_PATH, CPPFLAGS and LDFLAGS to bend
 search paths for header files and shared libraries. It's known to work on
-Linux with GCC 4.x.
+Linux with GCC and clang.
 
-(c) 2013-2016 Christian Heimes <christian@python.org>
+(c) 2013-2017 Christian Heimes <christian@python.org>
 """
 from __future__ import print_function
 
+import argparse
 from datetime import datetime
 import logging
 import os
@@ -37,28 +38,84 @@ import tarfile
 
 log = logging.getLogger("multissl")
 
-OPENSSL_VERSIONS = [
+OPENSSL_OLD_VERSIONS = [
      "0.9.8zc",
      "0.9.8zh",
      "1.0.1u",
+]
+
+OPENSSL_RECENT_VERSIONS = [
      "1.0.2",
-     "1.0.2k",
      "1.0.2l",
-     "1.1.0e",
      "1.1.0f",
 ]
 
-LIBRESSL_VERSIONS = [
+LIBRESSL_OLD_VERSIONS = [
     "2.3.10",
     "2.4.5",
+]
+
+LIBRESSL_RECENT_VERSIONS = [
     "2.5.3",
     "2.5.5",
 ]
 
-
 # store files in ../multissl
 HERE = os.path.abspath(os.getcwd())
 MULTISSL_DIR = os.path.abspath(os.path.join(HERE, '..', 'multissl'))
+
+parser = argparse.ArgumentParser(
+    prog='multissl',
+    description=(
+        "Run CPython tests with multiple OpenSSL and LibreSSL "
+        "versions."
+    )
+)
+parser.add_argument(
+    '--debug',
+    action='store_true'
+)
+parser.add_argument(
+    '--only-new',
+    action='store_true'
+)
+parser.add_argument(
+    '--openssl',
+    nargs='+',
+    default=(),
+    help=(
+        "OpenSSL versions, defaults to '{}' (old: '{}') if no "
+        "OpenSSL and LibreSSL versions are given."
+    ).format(OPENSSL_RECENT_VERSIONS, OPENSSL_OLD_VERSIONS)
+)
+parser.add_argument(
+    '--libressl',
+    nargs='+',
+    default=(),
+    help=(
+        "LibreSSL versions, defaults to '{}' (old: '{}') if no "
+        "OpenSSL and LibreSSL versions are given."
+    ).format(LIBRESSL_RECENT_VERSIONS, LIBRESSL_OLD_VERSIONS)
+)
+parser.add_argument(
+    '--tests',
+    nargs='*',
+    default=(),
+    help='Python tests to run, defaults to all SSL related tests.'
+)
+parser.add_argument(
+    '--base-directory',
+    default=MULTISSL_DIR
+)
+parser.add_argument(
+    '--no-network',
+    action='store_false',
+    dest='network',
+)
+parser.add_argument(
+    '--build-only',
+    action='store_true'
+)
 
 
 class AbstractBuilder(object):
@@ -66,31 +123,41 @@ class AbstractBuilder(object):
     url_template = None
     src_template = None
     build_template = None
-    default_destdir = None
-    srcdir = os.path.join(MULTISSL_DIR, "src")
 
     module_files = ("Modules/_ssl.c",
                     "Modules/_hashopenssl.c")
     module_libs = ("_ssl", "_hashlib")
 
-    def __init__(self, version, compile_args=(), destdir=None):
+    def __init__(self, version, compile_args=(),
+                 basedir=MULTISSL_DIR):
         self._check_python_builddir()
         self.version = version
         self.compile_args = compile_args
-        if destdir is None:
-            destdir = self.default_destdir
         # installation directory
-        self.install_dir = os.path.join(destdir, version)
+        self.install_dir = os.path.join(
+            os.path.join(basedir, self.library.lower()), version
+        )
         # source file
-
+        self.src_dir = os.path.join(basedir, 'src')
         self.src_file = os.path.join(
-            self.srcdir, self.src_template.format(version))
+            self.src_dir, self.src_template.format(version))
         # build directory (removed after install)
         self.build_dir = os.path.join(
-            self.srcdir, self.build_template.format(version))
+            self.src_dir, self.build_template.format(version))
 
     def __str__(self):
         return "<{0.__class__.__name__} for {0.version}>".format(self)
+
+    def __eq__(self, other):
+        if not isinstance(other, AbstractBuilder):
+            return NotImplemented
+        return (
+            self.library == other.library
+            and self.version == other.version
+        )
+
+    def __hash__(self):
+        return hash((self.library, self.version))
 
     @property
     def openssl_cli(self):
@@ -106,7 +173,10 @@ class AbstractBuilder(object):
     @property
     def pyssl_version(self):
         """Value of ssl.OPENSSL_VERSION"""
-        cmd = ['./python', "-c", "import ssl; print(ssl.OPENSSL_VERSION)"]
+        cmd = [
+            sys.executable,
+            '-c', 'import ssl; print(ssl.OPENSSL_VERSION)'
+        ]
         return self._subprocess_output(cmd)
 
     @property
@@ -134,17 +204,16 @@ class AbstractBuilder(object):
         if env is None:
             env = os.environ.copy()
             env["LD_LIBRARY_PATH"] = self.lib_dir
-        out = subprocess.check_output(cmd, env=env)
+        out = subprocess.check_output(cmd, env=env, **kwargs)
         return out.strip().decode("utf-8")
 
     def _check_python_builddir(self):
-        for name in ['python', 'setup.py', 'Modules/_ssl.c',
-                     'Lib/test/ssltests.py']:
+        for name in ['python', 'setup.py', 'Modules/_ssl.c']:
             if not os.path.isfile(name):
-                raise ValueError("You must run this script from the Python "
-                                 "build directory")
-        # if sys.executable != os.path.abspath("python"):
-        #     raise ValueError("Script must be executed with './python'")
+                raise ValueError(
+                    "You must run this script from the Python "
+                    "build directory"
+                )
 
     def _download_src(self):
         """Download sources"""
@@ -213,7 +282,7 @@ class AbstractBuilder(object):
             raise ValueError(version)
 
     def recompile_pymods(self):
-        log.warn("Using build from {}".format(self.build_dir))
+        log.warning("Using build from {}".format(self.build_dir))
         # force a rebuild of all modules that use OpenSSL APIs
         for fname in self.module_files:
             os.utime(fname, None)
@@ -231,12 +300,12 @@ class AbstractBuilder(object):
         env["LD_RUN_PATH"] = self.lib_dir
 
         log.info("Rebuilding Python modules")
-        cmd = ['./python', "setup.py", "build"]
+        cmd = [sys.executable, "setup.py", "build"]
         self._subprocess_call(cmd, env=env)
         self.check_imports()
 
     def check_imports(self):
-        cmd = ['./python', "-c", "import _ssl; import _hashlib"]
+        cmd = [sys.executable, "-c", "import _ssl; import _hashlib"]
         self._subprocess_call(cmd)
 
     def check_pyssl(self):
@@ -244,25 +313,18 @@ class AbstractBuilder(object):
         if self.version not in version:
             raise ValueError(version)
 
-    def run_pytests(self, *args):
-        if not args:
-            cmd = ['./python', 'Lib/test/ssltests.py']
+    def run_python_tests(self, tests, network=True):
+        if not tests:
+            cmd = [sys.executable, 'Lib/test/ssltests.py', '-j0']
         elif sys.version_info < (3, 3):
-            cmd = ['./python', "-m", "test.regrtest"]
-            cmd.extend(args)
+            cmd = [sys.executable, '-m', 'test.regrtest']
         else:
-            cmd = ['./python', "-m", "test"]
-            cmd.extend(args)
+            cmd = [sys.executable, '-m', 'test', '-j0']
+        if network:
+            cmd.extend(['-u', 'network', '-u', 'urlfetch'])
+        cmd.extend(['-w', '-r'])
+        cmd.extend(tests)
         self._subprocess_call(cmd, stdout=None)
-
-    def run_python_tests(self, *args):
-        self.recompile_pymods()
-        self.check_pyssl()
-        try:
-            self.run_pytests(*args)
-        except Exception:
-            print(self)
-            raise
 
 
 class BuildOpenSSL(AbstractBuilder):
@@ -270,24 +332,17 @@ class BuildOpenSSL(AbstractBuilder):
     url_template = "https://www.openssl.org/source/openssl-{}.tar.gz"
     src_template = "openssl-{}.tar.gz"
     build_template = "openssl-{}"
-    default_destdir = os.path.join(MULTISSL_DIR, 'openssl')
 
 
 class BuildLibreSSL(AbstractBuilder):
     library = "LibreSSL"
-    # HTTP! It's 2016!!
     url_template = (
         "https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-{}.tar.gz")
     src_template = "libressl-{}.tar.gz"
     build_template = "libressl-{}"
-    default_destdir = os.path.join(MULTISSL_DIR, 'libressl')
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO,
-                        format="*** %(levelname)s %(message)s")
-
-    start = datetime.now()
+def configure_make():
     if not os.path.isfile('Makefile'):
         log.info('Running ./configure')
         subprocess.check_call([
@@ -296,41 +351,75 @@ if __name__ == "__main__":
         ])
 
     log.info('Running make')
-    subprocess.check_call(['make', '--quiet', '-j4'])
+    subprocess.check_call(['make', '--quiet'])
 
-    if False:
-        OPENSSL_VERSIONS = ["1.1.1-dev"]
-        LIBRESSL_VERSIONS = []
+
+def main():
+    args = parser.parse_args()
+    if not args.openssl and not args.libressl:
+        args.openssl = list(OPENSSL_RECENT_VERSIONS)
+        args.libressl = list(LIBRESSL_RECENT_VERSIONS)
+        if not args.only_new:
+            args.openssl.extend(OPENSSL_OLD_VERSIONS)
+            args.libressl.extend(LIBRESSL_OLD_VERSIONS)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="*** %(levelname)s %(message)s"
+    )
+
+    start = datetime.now()
+
+    for name in ['python', 'setup.py', 'Modules/_ssl.c']:
+        if not os.path.isfile(name):
+            parser.error(
+                "Must be executed from CPython build dir"
+            )
+
+    # check for configure and run make
+    configure_make()
 
     # download and register builder
     builds = []
-    for version in OPENSSL_VERSIONS:
-        if version in {"0.9.8i", "0.9.8l", "0.9.8k"}:
-            compile_args = ("no-asm",)
-        else:
-            compile_args = ()
-        build = BuildOpenSSL(version, compile_args)
+
+    for version in args.openssl:
+        build = BuildOpenSSL(version)
         build.install()
         builds.append(build)
 
-    for version in LIBRESSL_VERSIONS:
+    for version in args.libressl:
         build = BuildLibreSSL(version)
         build.install()
         builds.append(build)
 
-    # test compilation first (ccache is awesome)
     for build in builds:
-        build.recompile_pymods()
+        try:
+            build.recompile_pymods()
+            build.check_pyssl()
+            if not args.build_only:
+                build.run_python_tests(
+                    tests=args.tests,
+                    network=args.network,
+                )
+        except Exception as e:
+            log.exception("%s failed", build)
+            print("{} failed: {}".format(build, e), file=sys.stderr)
+            sys.exit(2)
 
-    if False:
-        for build in builds:
-            build.run_python_tests("-unetwork,urlfetch", "-w",
-                                   "test_hashlib", "test_ssl")
+    print("\n{} finished in {}".format(
+        "Tests" if not args.build_only else "Builds",
+        datetime.now() - start
+    ))
+    print('Python: ', sys.version)
+    if args.tests:
+        print('Tests:', ' '.join(args.tests))
     else:
-        for build in builds:
-            build.run_python_tests()
+        print('All SSL tests.')
 
+    print('OpenSSL / LibreSSL versions:')
     for build in builds:
-        print(str(build))
-    print('Python', sys.version_info)
-    print(datetime.now() - start)
+        print("    * {0.library} {0.version}".format(build))
+
+
+if __name__ == "__main__":
+    main()
