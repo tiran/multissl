@@ -1,14 +1,14 @@
-#!/usr/bin/python3
+#!./python
 """Run Python tests against multiple installations of OpenSSL and LibreSSL
 
 The script
 
-  (1) downloads OpenSSL tar bundle
+  (1) downloads OpenSSL / LibreSSL tar bundle
   (2) extracts it to ./src
-  (3) compiles OpenSSL
-  (4) installs OpenSSL into ./LIB/VERSION/
+  (3) compiles OpenSSL / LibreSSL
+  (4) installs OpenSSL / LibreSSL into ../multissl/$LIB/$VERSION/
   (5) forces a recompilation of Python modules using the
-      header and library files from ./LIB/VERSION/
+      header and library files from ../multissl/$LIB/$VERSION/
   (6) runs Python's test suite
 
 The script must be run with Python's build directory as current working
@@ -17,6 +17,8 @@ directory.
 The script uses LD_RUN_PATH, LD_LIBRARY_PATH, CPPFLAGS and LDFLAGS to bend
 search paths for header files and shared libraries. It's known to work on
 Linux with GCC and clang.
+
+Please keep this script compatible with Python 2.7, and 3.4 to 3.7.
 
 (c) 2013-2017 Christian Heimes <christian@python.org>
 """
@@ -73,18 +75,20 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument(
     '--debug',
-    action='store_true'
+    action='store_true',
+    help="Enable debug mode",
 )
 parser.add_argument(
-    '--only-new',
-    action='store_true'
+    '--disable-ancient',
+    action='store_true',
+    help="Don't test OpenSSL < 1.0.2 and LibreSSL < 2.5.3.",
 )
 parser.add_argument(
     '--openssl',
     nargs='+',
     default=(),
     help=(
-        "OpenSSL versions, defaults to '{}' (old: '{}') if no "
+        "OpenSSL versions, defaults to '{}' (ancient: '{}') if no "
         "OpenSSL and LibreSSL versions are given."
     ).format(OPENSSL_RECENT_VERSIONS, OPENSSL_OLD_VERSIONS)
 )
@@ -93,7 +97,7 @@ parser.add_argument(
     nargs='+',
     default=(),
     help=(
-        "LibreSSL versions, defaults to '{}' (old: '{}') if no "
+        "LibreSSL versions, defaults to '{}' (ancient: '{}') if no "
         "OpenSSL and LibreSSL versions are given."
     ).format(LIBRESSL_RECENT_VERSIONS, LIBRESSL_OLD_VERSIONS)
 )
@@ -101,20 +105,23 @@ parser.add_argument(
     '--tests',
     nargs='*',
     default=(),
-    help='Python tests to run, defaults to all SSL related tests.'
+    help="Python tests to run, defaults to all SSL related tests.",
 )
 parser.add_argument(
     '--base-directory',
-    default=MULTISSL_DIR
+    default=MULTISSL_DIR,
+    help="Base directory for OpenSSL / LibreSSL sources and builds."
 )
 parser.add_argument(
     '--no-network',
     action='store_false',
     dest='network',
+    help="Disable network tests."
 )
 parser.add_argument(
-    '--build-only',
-    action='store_true'
+    '--compile-only',
+    action='store_true',
+    help="Don't run tests, only compile _ssl.c and _hashopenssl.c."
 )
 
 
@@ -130,7 +137,6 @@ class AbstractBuilder(object):
 
     def __init__(self, version, compile_args=(),
                  basedir=MULTISSL_DIR):
-        self._check_python_builddir()
         self.version = version
         self.compile_args = compile_args
         # installation directory
@@ -206,14 +212,6 @@ class AbstractBuilder(object):
             env["LD_LIBRARY_PATH"] = self.lib_dir
         out = subprocess.check_output(cmd, env=env, **kwargs)
         return out.strip().decode("utf-8")
-
-    def _check_python_builddir(self):
-        for name in ['python', 'setup.py', 'Modules/_ssl.c']:
-            if not os.path.isfile(name):
-                raise ValueError(
-                    "You must run this script from the Python "
-                    "build directory"
-                )
 
     def _download_src(self):
         """Download sources"""
@@ -359,7 +357,7 @@ def main():
     if not args.openssl and not args.libressl:
         args.openssl = list(OPENSSL_RECENT_VERSIONS)
         args.libressl = list(LIBRESSL_RECENT_VERSIONS)
-        if not args.only_new:
+        if not args.disable_ancient:
             args.openssl.extend(OPENSSL_OLD_VERSIONS)
             args.libressl.extend(LIBRESSL_OLD_VERSIONS)
 
@@ -375,6 +373,10 @@ def main():
             parser.error(
                 "Must be executed from CPython build dir"
             )
+    if not os.path.samefile('python', sys.executable):
+        parser.error(
+            "Must be executed with ./python from CPython build dir"
+        )
 
     # check for configure and run make
     configure_make()
@@ -396,7 +398,7 @@ def main():
         try:
             build.recompile_pymods()
             build.check_pyssl()
-            if not args.build_only:
+            if not args.compile_only:
                 build.run_python_tests(
                     tests=args.tests,
                     network=args.network,
@@ -407,14 +409,16 @@ def main():
             sys.exit(2)
 
     print("\n{} finished in {}".format(
-        "Tests" if not args.build_only else "Builds",
+        "Tests" if not args.compile_only else "Builds",
         datetime.now() - start
     ))
     print('Python: ', sys.version)
-    if args.tests:
-        print('Tests:', ' '.join(args.tests))
+    if args.compile_only:
+        print('Build only')
+    elif args.tests:
+        print('Executed Tests:', ' '.join(args.tests))
     else:
-        print('All SSL tests.')
+        print('Executed all SSL tests.')
 
     print('OpenSSL / LibreSSL versions:')
     for build in builds:
